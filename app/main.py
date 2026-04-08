@@ -43,15 +43,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount Gradio demo at /demo
+# Mount Gradio demo at /
 from app.demo import demo as gradio_demo  # noqa: E402 (after app created to avoid circular)
-gr.mount_gradio_app(app, gradio_demo, path="/demo")
-
-
-@app.get("/", include_in_schema=False)
-def root_redirect():
-    """Redirect root to the interactive demo."""
-    return RedirectResponse(url="/demo")
+gr.mount_gradio_app(app, gradio_demo, path="/")
 
 # ---------------------------------------------------------------------------
 # Request / Response schemas
