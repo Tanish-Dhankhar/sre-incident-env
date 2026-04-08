@@ -1,3 +1,13 @@
+---
+title: SRE Incident Env
+emoji: 🚨
+colorFrom: red
+colorTo: black
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # SRE Incident Response — OpenEnv
 
 > **Train AI agents to diagnose and fix production outages on a simulated Linux server.**  
