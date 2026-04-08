@@ -43,9 +43,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount Gradio demo at /
-from app.demo import demo as gradio_demo  # noqa: E402 (after app created to avoid circular)
-gr.mount_gradio_app(app, gradio_demo, path="/")
+
 
 # ---------------------------------------------------------------------------
 # Request / Response schemas
@@ -187,3 +185,7 @@ def get_state(session_id: str):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# Mount Gradio demo at / (MUST BE AT THE VERY END)
+from app.demo import demo as gradio_demo  # noqa: E402
+app = gr.mount_gradio_app(app, gradio_demo, path="/")
