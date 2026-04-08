@@ -346,20 +346,13 @@ TIER_RUNNERS = {
 
 def main():
     parser = argparse.ArgumentParser(description="SRE OpenEnv — Tiered Baseline")
-    parser.add_argument("--tier", choices=["1", "2", "3", "all"], default="all",
-                        help="Which tier(s) to run (default: all)")
+    parser.add_argument("--tier", choices=["1", "2", "3", "all"], default="3",
+                        help="Which tier(s) to run (default: 3)")
     parser.add_argument("--tasks", nargs="+", type=int, default=[1, 2, 3],
                         help="Which task IDs to run (default: 1 2 3)")
     args = parser.parse_args()
 
     tiers_to_run = [1, 2, 3] if args.tier == "all" else [int(args.tier)]
-
-    print("# SRE Incident Response OpenEnv — Tiered Baseline")
-    print(f"# Model: {MODEL_NAME}  Temperature: {TEMPERATURE}")
-    print(f"# Environment: {ENVIRONMENT_URL}")
-    print(f"# Tiers: {[TIER_NAMES[t] for t in tiers_to_run]}")
-    print(f"# Tasks: {args.tasks}")
-    print()
 
     all_results: dict[int, dict[int, float]] = {}   # tier -> {task_id -> score}
 
@@ -367,55 +360,17 @@ def main():
         runner = TIER_RUNNERS[tier]
         tier_scores: dict[int, float] = {}
 
-        print(f"{'=' * 60}")
-        print(f"## Tier {tier}: {TIER_NAMES[tier]}")
-        print(f"{'=' * 60}")
-
         for task_id in args.tasks:
             task_name = TASK_NAMES[task_id]
-            print(f"\n[START] task={task_name} env=sre-incident-env model={MODEL_NAME}", flush=True)
+            print(f"[START] task={task_name} env=sre-incident-env model={MODEL_NAME}", flush=True)
             score = runner(task_id)
             tier_scores[task_id] = score
             time.sleep(0.5)
 
-        avg = sum(tier_scores.values()) / len(tier_scores)
-        print(f"\n# Tier {tier} ({TIER_NAMES[tier]}) average: {avg:.3f}")
-        for tid, sc in tier_scores.items():
-            print(f"#   Task {tid} ({TASK_NAMES[tid]}): {sc:.3f}")
-
         all_results[tier] = tier_scores
-        print()
 
     # ---- Summary table ----
-    if len(tiers_to_run) > 1:
-        print("=" * 60)
-        print("## Summary — Score by Tier and Task")
-        print("=" * 60)
-        header = f"{'Task':<25}" + "".join(f"{'Tier ' + str(t):<18}" for t in tiers_to_run) + "Δ (T3−T1)"
-        print(header)
-        print("-" * len(header))
-        for task_id in args.tasks:
-            row = f"{TASK_NAMES[task_id]:<25}"
-            scores = [all_results[t].get(task_id, 0.0) for t in tiers_to_run]
-            row += "".join(f"{s:<18.3f}" for s in scores)
-            if len(scores) >= 2:
-                delta = scores[-1] - scores[0]
-                row += f"{delta:+.3f}"
-            print(row)
-
-        # Averages row
-        row = f"{'AVERAGE':<25}"
-        tier_avgs = []
-        for t in tiers_to_run:
-            avg = sum(all_results[t].values()) / len(all_results[t])
-            tier_avgs.append(avg)
-            row += f"{avg:<18.3f}"
-        if len(tier_avgs) >= 2:
-            row += f"{tier_avgs[-1] - tier_avgs[0]:+.3f}"
-        print(row)
-        print()
-        print(f"# Best tier: Tier {tiers_to_run[tier_avgs.index(max(tier_avgs))]} ({TIER_NAMES[tiers_to_run[tier_avgs.index(max(tier_avgs))]]})")
-        print(f"# Average score (CoT): {max(tier_avgs):.3f}")
+    # Disabled for automated grader compliance
 
 
 if __name__ == "__main__":
