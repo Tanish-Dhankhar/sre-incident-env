@@ -1,0 +1,283 @@
+spec_version: 1
+name: sre-incident-response
+version: 2.0.0
+type: space
+runtime: fastapi
+app: app.main:app
+port: 7860
+
+metadata:
+  title: "SRE Incident Response"
+  description: >
+    A fully stateful, pure-Python simulation of a broken Linux server.
+    An AI agent interacts via standard terminal commands (as actions) and
+    receives command output (as observations) to diagnose and fix a downed
+    web service. Models real SRE workflows: log inspection, config repair,
+    process management, and resource cleanup.
+  domain: site-reliability-engineering
+  tags:
+    - linux
+    - incident-response
+    - sre
+    - diagnostic-reasoning
+    - openenv
+    - reinforcement-learning
+  author: "Meta Scalar Hackathon Team"
+  license: MIT
+  huggingface_space: "https://huggingface.co/spaces/your-org/sre-incident-response"
+
+environment:
+  action_type: free_text_command
+  action_description: "A single Linux terminal command (string). No metadata required."
+  observation_type: structured
+  observation_fields:
+    - name: output
+      type: string
+      description: "Raw terminal output of the executed command"
+    - name: service_status
+      type: enum
+      values: ["up", "down", "degraded"]
+      description: "Surface health indicator. 'degraded' = nginx running but requests fail (Task 3)"
+    - name: step
+      type: integer
+      description: "Current step number within the episode"
+    - name: done
+      type: boolean
+      description: "True when episode is complete (service restored + root cause fixed)"
+    - name: reward
+      type: float
+      description: "Reward earned this step (see reward_function)"
+    - name: info.journal
+      type: list[string]
+      description: "Incident journal: auto-logged discoveries appended each step"
+    - name: info.milestones
+      type: object
+      description: "Per-milestone earned status, step, and reward value"
+    - name: info.escalation_level
+      type: integer
+      description: "Task 3 only: disk pressure escalation level (0-3)"
+  max_steps: 30
+  episode_boundary: "done=True when service_healthy AND root_cause_eliminated"
+  stateful: true
+  deterministic: true
+  seed_mechanism: "SHA-256(session_id) seeded into Python random — same session_id = same scenario"
+
+reward_function:
+  type: milestone_plus_efficiency
+  description: >
+    Three milestone checkpoints provide dense reward across the trajectory.
+    An efficiency multiplier rewards faster solutions. Two penalty types
+    discourage careless SRE behavior (blind restarts, destructive commands).
+  milestones:
+    - id: M1
+      name: diagnostic_clue_found
+      reward: 0.20
+      description: "A diagnostic command (netstat/journalctl/df) reveals the root cause"
+      fires_once: true
+    - id: M2
+      name: root_cause_targeted
+      reward: 0.30
+      description: "Agent takes an action directly targeting the root cause"
+      fires_once: true
+      condition: "For Task 2: only fires if nginx config is valid AFTER the write (no reward for failed sed)"
+    - id: M3
+      name: service_restored
+      reward: 0.50
+      description: "service_healthy=True — nginx returns 200 OK"
+      fires_once: true
+  efficiency_multiplier:
+    thresholds:
+      - steps_le: 10
+        multiplier: 1.00
+      - steps_le: 16
+        multiplier: 0.90
+      - steps_le: 22
+        multiplier: 0.80
+      - steps_le: 30
+        multiplier: 0.70
+  penalties:
+    - id: shotgun_restart
+      amount: -0.10
+      trigger: "systemctl restart nginx run 3+ or 5+ times before M1 fires"
+      fires: "at restart #3 and #5 (twice maximum)"
+    - id: pre_log_restart
+      amount: -0.15
+      trigger: "3+ restarts before agent reads any log (journalctl/cat /var/log)"
+      fires: "once per episode"
+    - id: destructive_action
+      amount: -0.15
+      trigger: "Blocked command (rm -rf /, fork bomb, dd of=/dev/sda)"
+      fires: "each attempt"
+  formula: "score = clamp((M1+M2+M3) * efficiency_multiplier - penalties, 0.0, 1.0)"
+
+tasks:
+  - id: 1
+    name: zombie_process
+    display_name: "Zombie Process"
+    difficulty: easy
+    description: >
+      A zombie process holds port 8080. nginx cannot bind and fails silently on restart.
+      The agent must identify the zombie PID (randomized each session) via netstat/lsof,
+      kill it, and restart nginx.
+    parameterized: true
+    randomized_parameters:
+      - name: zombie_pid
+        description: "Random PID in range [15000, 45000] derived from session seed"
+    optimal_solution_path:
+      - "netstat -tulpn | grep 8080   # reveals zombie PID → earns M1"
+      - "kill -9 <zombie_pid>         # kills zombie → earns M2"
+      - "systemctl restart nginx      # restores service → earns M3"
+    optimal_steps: 3
+    median_steps: 8
+    expected_solve_rate_random: 0.05
+    expected_solve_rate_plain_llm: 0.70
+    expected_solve_rate_cot_llm: 0.90
+    baseline_score: 0.900
+    score_breakdown:
+      milestones_earned: "(M1+M2+M3) = 1.00"
+      efficiency_multiplier: "0.90 (≤16 steps)"
+      penalties: "0.00"
+      final: "1.00 × 0.90 = 0.90"
+
+  - id: 2
+    name: config_failure
+    display_name: "Config Failure"
+    difficulty: medium
+    description: >
+      nginx fails to start due to a syntax error in /etc/nginx/nginx.conf.
+      One of three error types is randomly injected: missing semicolon,
+      extra closing brace, or invalid directive. The agent must read journalctl
+      logs, identify the exact broken line, fix it with sed, and restart nginx.
+      Key mechanic: 'echo >' on nginx.conf truncates the file if the written
+      content is incomplete — the agent must self-recover.
+    parameterized: true
+    randomized_parameters:
+      - name: error_type
+        values: ["missing_semicolon", "extra_brace", "invalid_directive"]
+        description: "Randomly selected per session; determines which line is broken"
+    key_mechanic: >
+      Truncation recovery: if the agent uses 'echo content > /etc/nginx/nginx.conf'
+      with an incomplete config (<200 chars), the file is overwritten with a broken
+      stub. The simulator emits a warning. The agent must cat the file, recognize
+      its mistake, and write a complete valid configuration.
+    simulator_feedback:
+      - trigger: "sed pattern does not match anything"
+        message: "sed: no changes made to /etc/nginx/nginx.conf"
+      - trigger: "echo > with incomplete config (<200 chars)"
+        message: "[WARNING] /etc/nginx/nginx.conf overwritten with incomplete configuration..."
+    optimal_solution_path:
+      - "journalctl -u nginx --no-pager -n 50   # reveals error line → earns M1"
+      - "sed -i 's/<broken>/<fixed>/' /etc/nginx/nginx.conf  # fixes config → earns M2 (only if valid after)"
+      - "nginx -t                                # verifies config"
+      - "systemctl restart nginx                 # restores service → earns M3"
+    optimal_steps: 4
+    median_steps: 12
+    expected_solve_rate_random: 0.02
+    expected_solve_rate_plain_llm: 0.50
+    expected_solve_rate_cot_llm: 0.90
+    baseline_score: 0.900
+    score_breakdown:
+      milestones_earned: "(M1+M2+M3) = 1.00"
+      efficiency_multiplier: "0.90 (≤16 steps)"
+      penalties: "0.00"
+      final: "1.00 × 0.90 = 0.90"
+
+  - id: 3
+    name: resource_leak
+    display_name: "Resource Leak"
+    difficulty: hard
+    description: >
+      A rogue cron job dumps random data to /tmp every 1-2 minutes, filling the
+      filesystem. nginx is active (running) but requests return 503 because it
+      cannot write temporary files. The agent must see through the deception
+      (healthy-looking nginx), diagnose disk pressure, clear /tmp, AND remove
+      the cron job. Clearing /tmp alone is insufficient — the episode does not
+      end until cron is removed. Time pressure: disk escalates every 5 steps.
+    parameterized: true
+    randomized_parameters:
+      - name: junk_filename
+        description: "Random basename like cache_dump_X7K2P1.tmp"
+      - name: cron_schedule
+        values: ["* * * * *", "*/2 * * * *"]
+        description: "How frequently the cron job runs (escalates urgency)"
+      - name: active_red_herrings
+        description: "2 of 3 distractors active: high memory (A), suspect python process (B), stale lock file (C)"
+    deception: >
+      'systemctl status nginx' shows 'active (running)'. Only df -h and
+      the nginx error log (No space left on device) reveal the true issue.
+    time_pressure: >
+      Every 5 steps without clearing /tmp, disk escalates:
+      100% → 105% → 110% → 115% (nginx status degrades to 502).
+      Task 3 escalation modifier reduces efficiency multiplier by 0.03 per level.
+    second_health_check: >
+      3 steps after /tmp is first cleared, the environment runs an automated
+      monitoring check. If cron is still removed, emits confirmation. If cron
+      was not removed, emits a warning that /tmp is filling again.
+    key_mechanic: >
+      Two-step fix required: clear disk (M2) AND remove cron (episode done).
+      The incident journal auto-tracks what the agent has discovered,
+      ensuring the agent knows the cron removal requirement.
+    optimal_solution_path:
+      - "df -h                         # reveals /tmp at 100% → earns M1"
+      - "rm -rf /tmp/*                 # clears disk, nginx recovers → earns M2+M3"
+      - "crontab -r                    # removes cron job → episode ends"
+    optimal_steps: 3
+    median_steps: 6
+    expected_solve_rate_random: 0.01
+    expected_solve_rate_plain_llm: 0.40
+    expected_solve_rate_cot_llm: 1.00
+    baseline_score: 1.000
+    score_breakdown:
+      milestones_earned: "(M1+M2+M3) = 1.00"
+      efficiency_multiplier: "1.00 (≤10 steps)"
+      penalties: "0.00"
+      final: "1.00 × 1.00 = 1.00"
+
+research_value:
+  dimensions:
+    - name: diagnostic_reasoning_under_ambiguity
+      description: >
+        All tasks require the agent to disambiguate between surface symptoms
+        and root causes. Task 3's 'active but degraded' nginx is a particularly
+        strong test of this — agents that cannot read past surface status will fail.
+    - name: error_recovery
+      description: >
+        Task 2's truncation mechanic tests whether an agent can detect that it
+        made a mistake (wrote an incomplete config), read the resulting broken state,
+        and self-correct. No other OpenEnv submission is known to test this.
+    - name: efficiency_under_active_degradation
+      description: >
+        Task 3's time pressure means a slow agent scores lower than a fast one
+        even with identical fix sequences. This tests planning efficiency under
+        a worsening environment — a property absent from static tasks.
+    - name: instruction_following_with_partial_information
+      description: >
+        The incident journal provides progressive context across steps.
+        Agents that ignore journal entries and repeat already-ruled-out hypotheses
+        will waste steps and earn lower scores via the efficiency multiplier.
+  discriminates_between_tiers: true
+  tier_baseline_scores:
+    random_agent:
+      task_1: 0.05
+      task_2: 0.02
+      task_3: 0.01
+      average: 0.027
+    plain_llm:
+      task_1: 0.70
+      task_2: 0.50
+      task_3: 0.40
+      average: 0.533
+    cot_llm:
+      task_1: 0.900
+      task_2: 0.900
+      task_3: 1.000
+      average: 0.933
+
+baseline:
+  model: "gemini-3.1-flash-lite-preview"
+  temperature: 0.2
+  tiers_reported: 3
+  tier_3_average_score: 0.933
+  date: "2026-04-08"
+  reproducible: true
+  seed_mechanism: "session_id controls all scenario randomization"
