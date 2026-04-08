@@ -126,7 +126,9 @@ def list_tasks():
 
 
 @app.post("/reset", response_model=ResetResponse)
-def reset(req: ResetRequest):
+def reset(req: Optional[ResetRequest] = None):
+    if req is None:
+        req = ResetRequest()
     """
     Start a new episode.
 
